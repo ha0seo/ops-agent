@@ -1,0 +1,3 @@
+metricsPrefix:
+  - app: fakename
+    prefix: test.googleapis.com

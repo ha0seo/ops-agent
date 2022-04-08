@@ -17,9 +17,12 @@ package confgenerator
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -78,6 +81,12 @@ func (ve validationErrors) Error() string {
 type validationError struct {
 	validator.FieldError
 }
+
+const (
+	defaultMetricPrefix     = "workload.googleapis.com"
+	metricsPrefixInputFile  = "metrics-prefix-input.yaml"
+	metricsPrefixOutputFile = "metrics-prefix-output.yaml"
+)
 
 func (ve validationError) StructField() string {
 	// TODO: Fix yaml library so that this is unnecessary.
@@ -847,4 +856,159 @@ func validateSSLConfig(receivers metricsReceiverMap) error {
 // parameter is name of the parameter.
 func parameterErrorPrefix(subagent string, kind string, id string, componentType string, parameter string) string {
 	return fmt.Sprintf(`parameter %q in %q type %s %s %q`, parameter, componentType, subagent, kind, id)
+}
+
+// MetricPrefixConfig to keep workload (app) name and prefix.
+type MetricsPrefixConfig struct {
+	App    string `yaml:"app" validate:"required,app"`
+	Prefix string `yaml:"prefix" validate:"required,prefix"`
+}
+
+// MetricsPrefixConfigs to keep list of MetricPrefixConfig.
+type MetricsPrefixConfigs struct {
+	Configs []MetricsPrefixConfig `yaml:"metricsPrefix"`
+}
+
+// SetMetricsPrefix gets input file (ex. metrics-prefix-input.yaml) and generates app to prefix
+// mapping for all the supported apps (using default prefix for apps that do not appear in the input
+// file) and save it as output (ex. metrics-prefix-output.yaml) to be used later to extract
+// prefix given app name.
+func SetMetricsPrefix(confDir, outputDir, inputFileName, outputFileName string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+
+	inputConfPath := filepath.Join(confDir, inputFileName)
+	outputConfPath := filepath.Join(outputDir, outputFileName)
+	appToPrefix := make(map[string]string)
+	supportedApps := GetSupportedApplications()
+	for _, k := range supportedApps {
+		appToPrefix[k] = defaultMetricPrefix // all to set as defaultMetricPrefix and update later
+	}
+
+	if _, err := os.Stat(inputConfPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to access file %v", inputConfPath)
+		}
+	} else {
+		data, err := ioutil.ReadFile(inputConfPath)
+		if err != nil {
+			return fmt.Errorf("failed to read file: %v", err)
+		}
+
+		// unmarshal metrics prefix config
+		var config MetricsPrefixConfigs
+		err = yaml.UnmarshalWithOptions(data, &config, yaml.Strict(), yaml.Validator(metricsPrefixValidator()))
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal metrics config data: %v", err)
+		}
+
+		for _, c := range config.Configs {
+			app := c.App
+			prefix := c.Prefix
+			if _, ok := appToPrefix[app]; !ok {
+				return fmt.Errorf("app %s is not in supported types, supported apps are : %v", app, reflect.ValueOf(appToPrefix).MapKeys())
+			}
+			appToPrefix[app] = prefix
+		}
+	}
+
+	// write to file
+	configBytes, err := yaml.Marshal(appToPrefix)
+	if err != nil {
+		return fmt.Errorf("failed to convert appToPrefix map %v to yaml: %v", appToPrefix, err)
+	}
+	err = ioutil.WriteFile(outputConfPath, configBytes, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write the yaml to config file %v : %v", outputConfPath, err)
+	}
+	return nil
+}
+
+func GetMetricsPrefix(app string) (string, error) {
+	if isInTests() {
+		// use a default metrics prefix to not mess up origianl tests in confgenerator_test.go
+		fmt.Printf("it's running in test (confgenerator_test.go). using defaultMetricPrefix :%v \n", defaultMetricPrefix)
+		return defaultMetricPrefix, nil
+	}
+	return GetMetricsPrefixForApp(app, metricsPrefixOutputFile)
+}
+
+// GetMetricsPrefix returns metrics prefix to be used given app name. This will look at output file
+// generated from SetMetricsPrefix.
+func GetMetricsPrefixForApp(app, confFile string) (res string, err error) {
+	confDebugFolder := filepath.Join(os.Getenv("RUNTIME_DIRECTORY"), "conf", "debug")
+	// TODO : clean and better handle this. current logic is used to separate files that are
+	// used for testing.
+	if !isInTests() {
+		confFile = filepath.Join(confDebugFolder, confFile)
+	}
+
+	if _, err := os.Stat(confFile); err != nil {
+		if os.IsNotExist(err) {
+			panic(fmt.Errorf("file does not exist. %v : %v", confFile, err))
+		} else {
+			panic(fmt.Errorf("failed to access file %v", confFile))
+		}
+	}
+
+	data, err := ioutil.ReadFile(confFile)
+	if err != nil {
+		return res, fmt.Errorf("failed to read file: %v", err)
+	}
+
+	// read to map
+	appToPrefix := make(map[string]string)
+
+	err = yaml.Unmarshal(data, &appToPrefix)
+	if err != nil {
+		return res, fmt.Errorf("failed to unmarshal data %v : %v", data, err)
+	}
+
+	if _, ok := appToPrefix[app]; !ok {
+		return res, fmt.Errorf("failed to get prefix for app %v from %v", app, appToPrefix)
+	}
+	return appToPrefix[app], nil
+}
+
+func metricsPrefixValidator() *validator.Validate {
+	v := validator.New()
+	v.RegisterValidation("prefix", func(fl validator.FieldLevel) bool {
+		prefix := fl.Field().String()
+		p, err := regexp.MatchString("[a-zA-Z]+.googleapis.com", prefix)
+		if !p {
+			panic(fmt.Errorf("failed to parse prefix :%s. %v", prefix, err))
+		}
+		return true
+	})
+	v.RegisterValidation("app", func(fl validator.FieldLevel) bool {
+		app := fl.Field().String()
+		supportedTypes := GetSupportedApplications()
+		for _, s := range supportedTypes {
+			if s == app {
+				return true
+			}
+		}
+		panic(fmt.Errorf("app %s not in supported types, supported apps are : %v", app, supportedTypes))
+	})
+	return v
+}
+
+func GetSupportedApplications() []string {
+	all := []string{"activemq", "apache", "cassandra", "couchdb", "elasticsearch", "hadoop",
+		"hbase", "jvm", "kafka", "memcached", "mongodb", "mysql", "nginx",
+		"postgresql", "rabbitmq", "redis", "solr", "tomcat", "wildfly", "zookeeper"}
+	sort.Strings(all)
+	return all
+}
+
+func isInTests() bool {
+	for _, arg := range os.Args {
+		if strings.HasSuffix(arg, ".test") {
+			return true
+		}
+	}
+	return false
 }

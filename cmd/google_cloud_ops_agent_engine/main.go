@@ -30,6 +30,7 @@ var (
 	input    = flag.String("in", "/etc/google-cloud-ops-agent/config.yaml", "path to the user specified agent config")
 	logsDir  = flag.String("logs", "/var/log/google-cloud-ops-agent", "path to store agent logs")
 	stateDir = flag.String("state", "/var/lib/google-cloud-ops-agent", "path to store agent state like buffers")
+	etcDir   = flag.String("etc", "/etc/google-cloud-ops-agent", "path to store extra configs")
 )
 
 func main() {
@@ -42,6 +43,9 @@ func run() error {
 	// TODO(lingshi) Move this to a shared place across Linux and Windows.
 	confDebugFolder := filepath.Join(os.Getenv("RUNTIME_DIRECTORY"), "conf", "debug")
 	if err := confgenerator.MergeConfFiles(*input, confDebugFolder, "linux", apps.BuiltInConfStructs); err != nil {
+		return err
+	}
+	if err := confgenerator.SetMetricsPrefix(*etcDir, confDebugFolder, "metrics-prefix-input.yaml", "metrics-prefix-output.yaml"); err != nil {
 		return err
 	}
 	return confgenerator.GenerateFiles(filepath.Join(confDebugFolder, "merged-config.yaml"), *service, *logsDir, *stateDir, *outDir)

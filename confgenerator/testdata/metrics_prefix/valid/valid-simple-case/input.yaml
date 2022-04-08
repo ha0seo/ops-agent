@@ -1,0 +1,5 @@
+metricsPrefix:
+  - app: redis
+    prefix: test.googleapis.com
+  - app: mysql
+    prefix: test.googleapis.com

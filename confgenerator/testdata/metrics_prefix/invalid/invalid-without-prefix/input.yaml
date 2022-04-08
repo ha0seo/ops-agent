@@ -1,0 +1,2 @@
+metricsPrefix:
+  - app: redis

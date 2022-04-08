@@ -15,6 +15,7 @@
 package apps
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/GoogleCloudPlatform/ops-agent/confgenerator"
@@ -50,6 +51,10 @@ func (r MetricsReceiverRedis) Pipelines() []otel.Pipeline {
 		transport = "tcp"
 	}
 
+	prefix, err := confgenerator.GetMetricsPrefix(r.Type())
+	if err != nil {
+		panic(fmt.Errorf("failed to get prefix for app %v : %v", r.Type(), err))
+	}
 	return []otel.Pipeline{{
 		Receiver: otel.Component{
 			Type: "redis",
@@ -70,7 +75,7 @@ func (r MetricsReceiverRedis) Pipelines() []otel.Pipeline {
 			),
 			otel.NormalizeSums(),
 			otel.MetricsTransform(
-				otel.AddPrefix("workload.googleapis.com"),
+				otel.AddPrefix(prefix),
 			),
 		},
 	}}

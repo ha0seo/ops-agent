@@ -1,0 +1,3 @@
+metricsPrefix:
+  - app: redis
+    prefix: invalid.prefix.com

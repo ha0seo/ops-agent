@@ -1,0 +1,3 @@
+metricsPrefix:
+  - axx: redis
+    prefix: test.googleapis.com
